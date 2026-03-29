@@ -28,15 +28,18 @@ import sys
 import time
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, cast
 
 # Allow importing from the project root
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import torch
 import torch.nn as nn
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
+from torch.utils.data.distributed import DistributedSampler
 from transformers import get_cosine_schedule_with_warmup
 from tqdm.auto import tqdm
 
@@ -61,6 +64,38 @@ from src.utils.helpers import (
 )
 
 logger = logging.getLogger("docred.train")
+
+
+def _is_distributed_env() -> bool:
+    """Return True when launched with torchrun / distributed env vars."""
+    return int(os.environ.get("WORLD_SIZE", "1")) > 1
+
+
+def _setup_distributed() -> Tuple[bool, int, int, int]:
+    """Initialize torch.distributed if requested by environment.
+
+    Returns:
+        (is_distributed, rank, world_size, local_rank)
+    """
+    if not _is_distributed_env():
+        return False, 0, 1, 0
+
+    if not torch.cuda.is_available():
+        raise RuntimeError("Distributed training requires CUDA GPUs.")
+
+    rank = int(os.environ["RANK"])
+    world_size = int(os.environ["WORLD_SIZE"])
+    local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+
+    torch.cuda.set_device(local_rank)
+    dist.init_process_group(backend="nccl", init_method="env://")
+    return True, rank, world_size, local_rank
+
+
+def _cleanup_distributed() -> None:
+    """Tear down process group if initialized."""
+    if dist.is_available() and dist.is_initialized():
+        dist.destroy_process_group()
 
 
 # ---------------------------------------------------------------------------
@@ -103,6 +138,12 @@ def parse_args() -> argparse.Namespace:
         "--eval_only",
         action="store_true",
         help="Skip training; only evaluate the checkpoint specified by --resume.",
+    )
+    parser.add_argument(
+        "--local_rank",
+        type=int,
+        default=int(os.environ.get("LOCAL_RANK", "0")),
+        help=argparse.SUPPRESS,
     )
     return parser.parse_args()
 
@@ -174,7 +215,8 @@ def build_optimizer(
     for name, param in model.named_parameters():
         if not param.requires_grad:
             continue
-        if name.startswith("encoder.") or name.startswith("plm."):
+        clean_name = name[7:] if name.startswith("module.") else name
+        if clean_name.startswith("encoder.") or clean_name.startswith("plm."):
             plm_params.append(param)
         else:
             other_params.append(param)
@@ -456,13 +498,15 @@ def _make_dataloader(
     *,
     batch_size: int,
     shuffle: bool,
+    sampler: Optional[DistributedSampler] = None,
     train_cfg: Dict[str, Any],
     device: torch.device,
 ) -> DataLoader:
     nw = int(train_cfg.get("dataloader_num_workers", 4))
     kwargs: Dict[str, Any] = {
         "batch_size": batch_size,
-        "shuffle": shuffle,
+        "shuffle": shuffle if sampler is None else False,
+        "sampler": sampler,
         "collate_fn": docred_collate_fn,
         "num_workers": nw,
         "pin_memory": device.type == "cuda",
@@ -492,6 +536,8 @@ def train(config: Dict[str, Any], resume_path: Optional[str] = None) -> None:
     loss_cfg = config["loss"]
     log_cfg = config["logging"]
 
+    is_distributed, rank, world_size, local_rank = _setup_distributed()
+
     output_dir = Path(log_cfg["output_dir"])
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -499,7 +545,8 @@ def train(config: Dict[str, Any], resume_path: Optional[str] = None) -> None:
     data_cfg = ensure_docred_data_paths(config["data"], log)
     config["data"] = data_cfg
     set_seed(train_cfg["seed"])
-    device = get_device()
+    device = torch.device(f"cuda:{local_rank}") if is_distributed else get_device()
+    is_main_process = rank == 0
 
     if device.type == "cuda":
         torch.backends.cudnn.benchmark = True
@@ -509,17 +556,28 @@ def train(config: Dict[str, Any], resume_path: Optional[str] = None) -> None:
     profile_timing = bool(train_cfg.get("profile_timing", False))
     profile_batches = max(1, int(train_cfg.get("profile_batches", 100)))
 
+    if is_distributed:
+        log.info(
+            "Distributed training enabled: rank=%d/%d on cuda:%d",
+            rank,
+            world_size,
+            local_rank,
+        )
+
     # Optional W&B
     use_wandb = False
     try:
         import wandb
-        wandb.init(
-            project=log_cfg.get("wandb_project", "docred-gcl"),
-            entity=log_cfg.get("wandb_entity"),
-            config=config,
-        )
-        use_wandb = True
-        log.info("Weights & Biases logging enabled.")
+        if is_main_process:
+            wandb.init(
+                project=log_cfg.get("wandb_project", "docred-gcl"),
+                entity=log_cfg.get("wandb_entity"),
+                config=config,
+            )
+            use_wandb = True
+            log.info("Weights & Biases logging enabled.")
+        else:
+            log.info("W&B disabled on non-main rank.")
     except Exception:
         log.info("wandb not available or init failed; logging to file only.")
 
@@ -542,10 +600,29 @@ def train(config: Dict[str, Any], resume_path: Optional[str] = None) -> None:
         use_entity_markers=data_cfg.get("use_entity_markers", True),
     )
 
+    train_sampler: Optional[DistributedSampler] = None
+    dev_sampler: Optional[DistributedSampler] = None
+    if is_distributed:
+        train_sampler = DistributedSampler(
+            train_dataset,
+            num_replicas=world_size,
+            rank=rank,
+            shuffle=True,
+            drop_last=False,
+        )
+        dev_sampler = DistributedSampler(
+            dev_dataset,
+            num_replicas=world_size,
+            rank=rank,
+            shuffle=False,
+            drop_last=False,
+        )
+
     train_loader = _make_dataloader(
         train_dataset,
         batch_size=train_cfg["batch_size"],
         shuffle=True,
+        sampler=train_sampler,
         train_cfg=train_cfg,
         device=device,
     )
@@ -553,6 +630,7 @@ def train(config: Dict[str, Any], resume_path: Optional[str] = None) -> None:
         dev_dataset,
         batch_size=train_cfg["batch_size"],
         shuffle=False,
+        sampler=dev_sampler,
         train_cfg=train_cfg,
         device=device,
     )
@@ -562,9 +640,15 @@ def train(config: Dict[str, Any], resume_path: Optional[str] = None) -> None:
     # Model
     # ------------------------------------------------------------------
     log.info("Initialising DocREDPipeline...")
-    model = DocREDPipeline(_pipeline_cfg(config))
-    model.to(device)
-    count_parameters(model)
+    model = DocREDPipeline(_pipeline_cfg(config)).to(device)
+    if is_distributed:
+        model = DDP(model, device_ids=[local_rank], output_device=local_rank)
+    base_model: DocREDPipeline = (
+        cast(DocREDPipeline, model.module)
+        if isinstance(model, DDP)
+        else model
+    )
+    count_parameters(base_model)
     mp = model_cfg.get("max_pairs_per_doc", -1)
     if mp and mp > 0:
         log.info("max_pairs_per_doc=%d (reduces GNN/triple cost on entity-heavy docs)", mp)
@@ -586,8 +670,17 @@ def train(config: Dict[str, Any], resume_path: Optional[str] = None) -> None:
         # num_easy_negatives=loss_cfg["num_easy_negatives"],
     )
 
-    # Update evidence co-occurrence statistics from training data
-    update_evidence_stats(loss_fn, train_loader)
+    # Update evidence co-occurrence statistics from full training data.
+    # Use an unsharded loader so all ranks build identical miner state.
+    stats_loader = _make_dataloader(
+        train_dataset,
+        batch_size=train_cfg["batch_size"],
+        shuffle=False,
+        sampler=None,
+        train_cfg=train_cfg,
+        device=device,
+    )
+    update_evidence_stats(loss_fn, stats_loader)
 
     # Move loss (ATLOP threshold, BMM, evidence miner buffers, …) to same device as logits
     loss_fn.to(device)
@@ -599,7 +692,7 @@ def train(config: Dict[str, Any], resume_path: Optional[str] = None) -> None:
     steps_per_epoch = math.ceil(len(train_loader) / accum_steps)
     total_steps = steps_per_epoch * train_cfg["epochs"]
 
-    optimizer = build_optimizer(model, train_cfg)
+    optimizer = build_optimizer(base_model, train_cfg)
     loss_params = [p for p in loss_fn.parameters() if p.requires_grad]
     if loss_params:
         optimizer.add_param_group(
@@ -638,7 +731,7 @@ def train(config: Dict[str, Any], resume_path: Optional[str] = None) -> None:
     if resume_path is not None:
         log.info("Resuming from checkpoint: %s", resume_path)
         ckpt = torch.load(resume_path, map_location=device)
-        model.load_state_dict(ckpt["model_state_dict"])
+        base_model.load_state_dict(ckpt["model_state_dict"])
         optimizer.load_state_dict(ckpt["optimizer_state_dict"])
         scheduler.load_state_dict(ckpt["scheduler_state_dict"])
         start_epoch = ckpt.get("epoch", 0) + 1
@@ -655,6 +748,9 @@ def train(config: Dict[str, Any], resume_path: Optional[str] = None) -> None:
     model.train()
 
     for epoch in range(start_epoch, train_cfg["epochs"]):
+        if train_sampler is not None:
+            train_sampler.set_epoch(epoch)
+
         epoch_loss_total = 0.0
         epoch_loss_ce = 0.0
         epoch_loss_gcl = 0.0
@@ -686,7 +782,8 @@ def train(config: Dict[str, Any], resume_path: Optional[str] = None) -> None:
             desc=f"Epoch {epoch + 1}/{train_cfg['epochs']}",
             unit="batch",
             dynamic_ncols=True,
-            leave=True,
+            leave=is_main_process,
+            disable=not is_main_process,
         )
         iter_end_time = time.perf_counter()
         for batch_idx, batch in batch_pbar:
@@ -729,7 +826,7 @@ def train(config: Dict[str, Any], resume_path: Optional[str] = None) -> None:
             # Compute joint loss
             # ----------------------------------------------------------------
             with amp_ctx:
-                loss_inputs = pack_joint_loss_inputs(model, outputs_1, outputs_2)
+                loss_inputs = pack_joint_loss_inputs(base_model, outputs_1, outputs_2)
                 loss_dict = loss_fn(loss_inputs, epoch, global_step)
             t3 = _tstamp()
 
@@ -784,7 +881,7 @@ def train(config: Dict[str, Any], resume_path: Optional[str] = None) -> None:
                 # --------------------------------------------------------
                 # Periodic logging
                 # --------------------------------------------------------
-                if global_step % log_cfg["log_every"] == 0:
+                if is_main_process and global_step % log_cfg["log_every"] == 0:
                     step_metrics = {
                         "loss_total": epoch_loss_total / num_batches,
                         "loss_ce": epoch_loss_ce / num_batches,
@@ -820,7 +917,7 @@ def train(config: Dict[str, Any], resume_path: Optional[str] = None) -> None:
 
             iter_end_time = t5
 
-        if profile_timing and profiled_batches > 0:
+        if is_main_process and profile_timing and profiled_batches > 0:
             total_s = time_acc["data_wait"] + time_acc["compute_total"]
             denom = total_s if total_s > 0.0 else 1.0
 
@@ -860,9 +957,10 @@ def train(config: Dict[str, Any], resume_path: Optional[str] = None) -> None:
         # ------------------------------------------------------------------
         # End-of-epoch evaluation
         # ------------------------------------------------------------------
-        if log_cfg.get("eval_every_epoch", True):
+        stop_training = False
+        if log_cfg.get("eval_every_epoch", True) and is_main_process:
             log.info("Evaluating on dev set after epoch %d...", epoch + 1)
-            dev_metrics = evaluate_dev(model, dev_loader, device)
+            dev_metrics = evaluate_dev(base_model, dev_loader, device)
             log.info(
                 "Dev metrics (epoch %d):\n%s",
                 epoch + 1,
@@ -884,7 +982,7 @@ def train(config: Dict[str, Any], resume_path: Optional[str] = None) -> None:
                 if log_cfg.get("save_best", True):
                     ckpt_state = {
                         "epoch": epoch,
-                        "model_state_dict": model.state_dict(),
+                        "model_state_dict": base_model.state_dict(),
                         "optimizer_state_dict": optimizer.state_dict(),
                         "scheduler_state_dict": scheduler.state_dict(),
                         "best_ign_f1": best_ign_f1,
@@ -912,12 +1010,28 @@ def train(config: Dict[str, Any], resume_path: Optional[str] = None) -> None:
                     "Early stopping triggered after %d epochs without improvement.",
                     patience,
                 )
-                break
+                stop_training = True
 
-    log.info("Training complete. Best dev Ign F1: %.4f", best_ign_f1)
-    if use_wandb:
+        if is_distributed:
+            stop_flag = torch.tensor(
+                [1 if stop_training else 0],
+                device=device,
+                dtype=torch.int,
+            )
+            dist.broadcast(stop_flag, src=0)
+            if int(stop_flag.item()) == 1:
+                break
+        elif stop_training:
+            break
+
+    if is_main_process:
+        log.info("Training complete. Best dev Ign F1: %.4f", best_ign_f1)
+    if use_wandb and is_main_process:
         import wandb
         wandb.finish()
+
+    if is_distributed:
+        _cleanup_distributed()
 
 
 # ---------------------------------------------------------------------------
