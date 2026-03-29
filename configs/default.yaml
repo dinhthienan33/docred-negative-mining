@@ -1,0 +1,135 @@
+# =============================================================================
+# DocRED SOTA Pipeline – Default Configuration
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Model
+# -----------------------------------------------------------------------------
+model:
+  # Pre-trained language model backbone (HuggingFace model name or local path)
+  plm_name: "microsoft/deberta-v3-large"
+
+  # LoRA/QLoRA PEFT adapter
+  use_lora: false
+
+  # Encoder output dimension (must match PLM hidden size for deberta-v3-large=1024)
+  hidden_dim: 1024
+
+  # Graph Neural Network
+  gnn_hidden_dim: 256
+  gnn_out_dim: 256
+  gnn_layers: 3
+  gnn_heads: 4
+  gnn_bases: 4        # basis decomposition for R-GCN edge types
+  gnn_dropout: 0.1
+
+  # Triple representation head
+  triple_dim: 512
+  rel_emb_dim: 128
+
+  # Contrastive projection head output dimension
+  contrastive_dim: 256
+
+  # Total number of relation labels including NA (96 typed + 1 NA = 97)
+  num_relations: 97
+
+  # Cap directed entity pairs per document (GNN + triple head). -1 = no cap.
+  # Large docs are O(E²); 256–512 cuts compute with small recall risk.
+  max_pairs_per_doc: 512
+
+# -----------------------------------------------------------------------------
+# Data
+# -----------------------------------------------------------------------------
+data:
+  train_path: "data/train_annotated.json"
+  dev_path:   "data/dev.json"
+  test_path:  "data/test.json"
+  rel_info_path: "data/rel_info.json"
+
+  # Maximum number of subword tokens per document (documents are truncated)
+  max_length: 1024
+
+  # Insert [unused0] / [unused1] markers around every entity mention
+  use_entity_markers: true
+
+# -----------------------------------------------------------------------------
+# Training
+# -----------------------------------------------------------------------------
+training:
+  epochs: 1
+  batch_size: 4
+  grad_accumulation_steps: 8  # effective batch = batch_size * this
+
+  # Speed: one forward pass instead of two (~2× faster step). Contrastive views
+  # share the same dropout draw; set false to restore two-pass dropout augmentation.
+  single_forward_contrastive: true
+
+  # DataLoader (faster input pipeline on Linux + GPU)
+  dataloader_num_workers: 8
+  dataloader_persistent_workers: true
+  prefetch_factor: 2
+
+  # Per-parameter-group learning rates
+  learning_rate_plm: 2.0e-5   # PLM backbone parameters
+  learning_rate_other: 1.0e-3  # GNN + head parameters
+
+  weight_decay: 0.01
+  warmup_ratio: 0.06           # fraction of total steps used for linear warmup
+  max_grad_norm: 1.0
+
+  fp16: true                   # mixed-precision training (AMP); use bf16 if available
+  bf16: true                   # prefer bfloat16 on Ampere+ (often faster / more stable than fp16)
+  seed: 42
+
+  # Early stopping: stop if dev Ign F1 does not improve for this many epochs
+  patience: 5
+
+# -----------------------------------------------------------------------------
+# Loss
+# -----------------------------------------------------------------------------
+loss:
+  # Weight for the graph contrastive loss term
+  lambda_gcl: 0.5
+
+  # Weight for the evidence-aware contrastive loss term
+  lambda_evidence: 0.3
+
+  # InfoNCE temperature (lower = sharper distribution)
+  contrastive_temperature: 0.07
+
+  # BMM warm-up: use uniform negative weights for first N epochs
+  bmm_warmup_epochs: 3
+
+  # Re-fit BMM every K optimizer steps
+  bmm_update_every: 100
+
+  # Number of EM iterations when fitting the Beta Mixture Model
+  bmm_em_iters: 10
+
+  # Evidence-aware negative sampling counts per anchor
+  num_hard_negatives: 10
+  num_medium_negatives: 5
+  num_easy_negatives: 5
+
+# -----------------------------------------------------------------------------
+# Evaluation
+# -----------------------------------------------------------------------------
+evaluation:
+  # Search for optimal classification threshold on dev set
+  threshold_search: true
+  threshold_range: [0.0, 1.0]
+  threshold_steps: 100          # number of threshold candidates to try
+
+# -----------------------------------------------------------------------------
+# Logging / Checkpointing
+# -----------------------------------------------------------------------------
+logging:
+  output_dir: "outputs"
+  log_every: 50                 # log loss every N optimizer steps
+  eval_every_epoch: true        # run dev evaluation at end of every epoch
+  save_best: true               # save checkpoint when dev Ign F1 improves
+  metric_for_best: "dev_ign_f1"
+
+  # Weights & Biases (set wandb_entity to your W&B username or leave null)
+  wandb_project: "docred-gcl"
+  wandb_entity: null

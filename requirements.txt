@@ -1,0 +1,40 @@
+# Core deep learning
+torch
+torchvision
+
+# Transformers + PEFT
+transformers
+peft
+
+# Graph Neural Networks (requires manual CUDA-version matching)
+torch-geometric
+
+# Configuration
+PyYAML
+
+# Experiment tracking
+wandb
+
+# Optional: auto-download DocRED when local JSON files are missing (see src/utils/load_dataset.py)
+kagglehub
+
+# Progress bars
+tqdm
+
+# Numerics
+numpy
+scipy
+
+# Evaluation utilities
+scikit-learn
+
+# Testing
+pytest
+pytest-mock
+
+# Optional: faster tokenization
+tokenizers
+tiktoken
+sentencepiece
+# Optional: mixed-precision support (included in torch but listed for clarity)
+# accelerate
