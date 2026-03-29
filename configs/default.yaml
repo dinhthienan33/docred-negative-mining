@@ -60,6 +60,10 @@ training:
   batch_size: 4
   grad_accumulation_steps: 8  # effective batch = batch_size * this
 
+  # Training-time bottleneck diagnostics.
+  profile_timing: false
+  profile_batches: 100
+
   # Speed: one forward pass instead of two (~2× faster step). Contrastive views
   # share the same dropout draw; set false to restore two-pass dropout augmentation.
   single_forward_contrastive: true

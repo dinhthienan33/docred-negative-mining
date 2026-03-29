@@ -537,6 +537,7 @@ class DocREDPipeline(nn.Module):
 
         num_pairs = len(pair_list)
         context = sent_embs_gnn.new_zeros(num_pairs, sent_embs_gnn.size(-1))
+        global_sent_mean = sent_embs_gnn.mean(0)
 
         # Project sentence embeddings to gnn_out if they differ in dim
         if sent_embs_gnn.size(-1) != self.gnn_out:
@@ -556,9 +557,9 @@ class DocREDPipeline(nn.Module):
                 if valid_ev:
                     ev_idx = torch.tensor(valid_ev, dtype=torch.long, device=device)
                     context[i] = sent_embs_gnn[ev_idx].mean(0)
+                    continue
             # Fallback: use average of all sentence embeddings as context
-            else:
-                context[i] = sent_embs_gnn.mean(0)
+            context[i] = global_sent_mean
 
         return context
 

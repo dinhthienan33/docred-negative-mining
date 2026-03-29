@@ -25,6 +25,7 @@ import logging
 import math
 import os
 import sys
+import time
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -504,6 +505,10 @@ def train(config: Dict[str, Any], resume_path: Optional[str] = None) -> None:
         torch.backends.cudnn.benchmark = True
         torch.set_float32_matmul_precision("high")
 
+    # Optional lightweight timing profiler for bottleneck diagnosis.
+    profile_timing = bool(train_cfg.get("profile_timing", False))
+    profile_batches = max(1, int(train_cfg.get("profile_batches", 100)))
+
     # Optional W&B
     use_wandb = False
     try:
@@ -655,6 +660,16 @@ def train(config: Dict[str, Any], resume_path: Optional[str] = None) -> None:
         epoch_loss_gcl = 0.0
         epoch_loss_evid = 0.0
         num_batches = 0
+        profiled_batches = 0
+        time_acc = {
+            "data_wait": 0.0,
+            "batch_prep": 0.0,
+            "forward": 0.0,
+            "loss": 0.0,
+            "backward": 0.0,
+            "opt_step": 0.0,
+            "compute_total": 0.0,
+        }
 
         # Determine whether BMM should be active this epoch
         bmm_active = epoch >= loss_cfg["bmm_warmup_epochs"]
@@ -673,8 +688,20 @@ def train(config: Dict[str, Any], resume_path: Optional[str] = None) -> None:
             dynamic_ncols=True,
             leave=True,
         )
+        iter_end_time = time.perf_counter()
         for batch_idx, batch in batch_pbar:
+            iter_start_time = time.perf_counter()
+            do_profile = profile_timing and profiled_batches < profile_batches
+            data_wait_s = iter_start_time - iter_end_time
+
+            def _tstamp() -> float:
+                if do_profile and device.type == "cuda":
+                    torch.cuda.synchronize()
+                return time.perf_counter()
+
+            t0 = _tstamp()
             model_batch = build_model_batch(batch, device, include_flat_labels=True)
+            t1 = _tstamp()
 
             # ----------------------------------------------------------------
             # Forward (optional second pass for contrastive dropout augmentation)
@@ -696,6 +723,7 @@ def train(config: Dict[str, Any], resume_path: Optional[str] = None) -> None:
             else:
                 with amp_ctx:
                     outputs_2 = model(model_batch)
+            t2 = _tstamp()
 
             # ----------------------------------------------------------------
             # Compute joint loss
@@ -703,6 +731,7 @@ def train(config: Dict[str, Any], resume_path: Optional[str] = None) -> None:
             with amp_ctx:
                 loss_inputs = pack_joint_loss_inputs(model, outputs_1, outputs_2)
                 loss_dict = loss_fn(loss_inputs, epoch, global_step)
+            t3 = _tstamp()
 
             total_loss: torch.Tensor = loss_dict["total"] / accum_steps
 
@@ -713,6 +742,7 @@ def train(config: Dict[str, Any], resume_path: Optional[str] = None) -> None:
                 scaler.scale(total_loss).backward()
             else:
                 total_loss.backward()
+            t4 = _tstamp()
 
             # ----------------------------------------------------------------
             # Accumulate stats
@@ -775,6 +805,57 @@ def train(config: Dict[str, Any], resume_path: Optional[str] = None) -> None:
 
                 # BMM parameters are updated inside HardNegativeWeighter.compute_weights
                 # when ``epoch >= bmm_warmup_epochs`` (see joint_loss / bmm.py).
+
+            t5 = _tstamp()
+            if do_profile:
+                time_acc["data_wait"] += data_wait_s
+                time_acc["batch_prep"] += (t1 - t0)
+                time_acc["forward"] += (t2 - t1)
+                time_acc["loss"] += (t3 - t2)
+                time_acc["backward"] += (t4 - t3)
+                if (batch_idx + 1) % accum_steps == 0:
+                    time_acc["opt_step"] += (t5 - t4)
+                time_acc["compute_total"] += (t5 - t0)
+                profiled_batches += 1
+
+            iter_end_time = t5
+
+        if profile_timing and profiled_batches > 0:
+            total_s = time_acc["data_wait"] + time_acc["compute_total"]
+            denom = total_s if total_s > 0.0 else 1.0
+
+            def _pct(x: float) -> float:
+                return 100.0 * x / denom
+
+            def _ms_per_batch(x: float) -> float:
+                return 1000.0 * x / profiled_batches
+
+            log.info(
+                "Epoch %d timing profile (first %d batches):\n"
+                "  data_wait : %8.2f ms/batch (%5.1f%%)\n"
+                "  batch_prep: %8.2f ms/batch (%5.1f%%)\n"
+                "  forward   : %8.2f ms/batch (%5.1f%%)\n"
+                "  loss      : %8.2f ms/batch (%5.1f%%)\n"
+                "  backward  : %8.2f ms/batch (%5.1f%%)\n"
+                "  opt_step* : %8.2f ms/batch (%5.1f%%)\n"
+                "  total     : %8.2f ms/batch (100.0%%)\n"
+                "  *opt_step is averaged over all profiled batches (includes accumulation gaps).",
+                epoch + 1,
+                profiled_batches,
+                _ms_per_batch(time_acc["data_wait"]),
+                _pct(time_acc["data_wait"]),
+                _ms_per_batch(time_acc["batch_prep"]),
+                _pct(time_acc["batch_prep"]),
+                _ms_per_batch(time_acc["forward"]),
+                _pct(time_acc["forward"]),
+                _ms_per_batch(time_acc["loss"]),
+                _pct(time_acc["loss"]),
+                _ms_per_batch(time_acc["backward"]),
+                _pct(time_acc["backward"]),
+                _ms_per_batch(time_acc["opt_step"]),
+                _pct(time_acc["opt_step"]),
+                _ms_per_batch(total_s),
+            )
 
         # ------------------------------------------------------------------
         # End-of-epoch evaluation
