@@ -265,3 +265,96 @@
 2026-03-29 09:32:00 | INFO | docred | GradScaler disabled (bf16 uses autocast only).
 2026-03-29 09:32:00 | INFO | docred | Starting training for 1 epochs...
 2026-03-29 09:32:00 | INFO | docred | Epoch 1/1: BMM warm-up (CE-only mode)
+2026-03-30 14:50:37 | INFO | docred | Local DocRED file missing for train_path; downloading dataset (wyldream/docred)...
+2026-03-30 14:50:43 | INFO | docred | Resolved train_path -> /root/.cache/kagglehub/datasets/wyldream/docred/versions/2/train_annotated.json
+2026-03-30 14:50:43 | INFO | docred | Resolved dev_path -> /root/.cache/kagglehub/datasets/wyldream/docred/versions/2/dev.json
+2026-03-30 14:50:43 | INFO | docred | Resolved test_path -> /root/.cache/kagglehub/datasets/wyldream/docred/versions/2/test.json
+2026-03-30 14:50:43 | INFO | docred | Resolved rel_info_path -> /root/.cache/kagglehub/datasets/wyldream/docred/versions/2/rel_info.json
+2026-03-30 14:50:43 | INFO | docred | Weights & Biases logging disabled by config (training.wandb=false).
+2026-03-30 14:50:43 | INFO | docred | Building datasets...
+2026-03-30 14:51:16 | INFO | docred | Train docs: 3053 | Dev docs: 1000
+2026-03-30 14:51:16 | INFO | docred | Initialising DocREDPipeline...
+2026-03-30 14:51:34 | INFO | docred | max_pairs_per_doc=512 (reduces GNN/triple cost on entity-heavy docs)
+2026-03-30 14:51:34 | INFO | docred | Initialising JointLoss...
+2026-03-30 14:51:55 | INFO | docred.train | Evidence miner co-occurrence statistics updated.
+2026-03-30 14:51:55 | INFO | docred.train | Optimizer: PLM params=391 (lr=2e-05), other params=167 (lr=0.001)
+2026-03-30 14:51:55 | INFO | docred.train | Scheduler: total_steps=96, warmup_steps=5
+2026-03-30 14:51:55 | INFO | docred | Mixed-precision training enabled (dtype=bfloat16).
+2026-03-30 14:51:55 | INFO | docred | GradScaler disabled (bf16 uses autocast only).
+2026-03-30 14:51:55 | INFO | docred | Starting training for 1 epochs...
+2026-03-30 14:51:55 | INFO | docred | Epoch 1/1: BMM warm-up (CE-only mode)
+2026-03-30 14:54:14 | INFO | docred | Local DocRED file missing for train_path; downloading dataset (wyldream/docred)...
+2026-03-30 14:54:15 | INFO | docred | Resolved train_path -> /root/.cache/kagglehub/datasets/wyldream/docred/versions/2/train_annotated.json
+2026-03-30 14:54:15 | INFO | docred | Resolved dev_path -> /root/.cache/kagglehub/datasets/wyldream/docred/versions/2/dev.json
+2026-03-30 14:54:15 | INFO | docred | Resolved test_path -> /root/.cache/kagglehub/datasets/wyldream/docred/versions/2/test.json
+2026-03-30 14:54:15 | INFO | docred | Resolved rel_info_path -> /root/.cache/kagglehub/datasets/wyldream/docred/versions/2/rel_info.json
+2026-03-30 14:54:15 | INFO | docred | Weights & Biases logging disabled by config (training.wandb=false).
+2026-03-30 14:54:15 | INFO | docred | Building datasets...
+2026-03-30 14:54:20 | INFO | docred | Train docs: 3053 | Dev docs: 1000
+2026-03-30 14:54:20 | INFO | docred | Initialising DocREDPipeline...
+2026-03-30 14:54:25 | INFO | docred | max_pairs_per_doc=256 (reduces GNN/triple cost on entity-heavy docs)
+2026-03-30 14:54:25 | INFO | docred | Initialising JointLoss...
+2026-03-30 14:54:44 | INFO | docred.train | Evidence miner co-occurrence statistics updated.
+2026-03-30 14:54:44 | INFO | docred.train | Optimizer: PLM params=199 (lr=2e-05), other params=167 (lr=0.001)
+2026-03-30 14:54:44 | INFO | docred.train | Scheduler: total_steps=24, warmup_steps=1
+2026-03-30 14:54:44 | INFO | docred | Mixed-precision training enabled (dtype=bfloat16).
+2026-03-30 14:54:44 | INFO | docred | GradScaler disabled (bf16 uses autocast only).
+2026-03-30 14:54:44 | INFO | docred | Starting training for 1 epochs...
+2026-03-30 14:54:44 | INFO | docred | Epoch 1/1: BMM warm-up (CE-only mode)
+2026-03-30 14:58:47 | INFO | docred | Local DocRED file missing for train_path; downloading dataset (wyldream/docred)...
+2026-03-30 14:58:48 | INFO | docred | Resolved train_path -> /root/.cache/kagglehub/datasets/wyldream/docred/versions/2/train_annotated.json
+2026-03-30 14:58:48 | INFO | docred | Resolved dev_path -> /root/.cache/kagglehub/datasets/wyldream/docred/versions/2/dev.json
+2026-03-30 14:58:48 | INFO | docred | Resolved test_path -> /root/.cache/kagglehub/datasets/wyldream/docred/versions/2/test.json
+2026-03-30 14:58:48 | INFO | docred | Resolved rel_info_path -> /root/.cache/kagglehub/datasets/wyldream/docred/versions/2/rel_info.json
+2026-03-30 14:58:48 | INFO | docred | CUDA-only mode enabled (training.require_cuda=true).
+2026-03-30 14:58:48 | INFO | docred | Weights & Biases logging disabled by config (training.wandb=false).
+2026-03-30 14:58:48 | INFO | docred | Building datasets...
+2026-03-30 14:58:50 | INFO | docred | Train docs: 3053 | Dev docs: 1000
+2026-03-30 14:58:50 | INFO | docred | Initialising DocREDPipeline...
+2026-03-30 14:58:51 | INFO | docred | max_pairs_per_doc=256 (reduces GNN/triple cost on entity-heavy docs)
+2026-03-30 14:58:51 | INFO | docred | Initialising JointLoss...
+2026-03-30 14:59:11 | INFO | docred.train | Evidence miner co-occurrence statistics updated.
+2026-03-30 14:59:11 | INFO | docred.train | Optimizer: PLM params=199 (lr=2e-05), other params=167 (lr=0.001)
+2026-03-30 14:59:11 | INFO | docred.train | Scheduler: total_steps=24, warmup_steps=1
+2026-03-30 14:59:11 | INFO | docred | Mixed-precision training enabled (dtype=bfloat16).
+2026-03-30 14:59:11 | INFO | docred | GradScaler disabled (bf16 uses autocast only).
+2026-03-30 14:59:11 | INFO | docred | Starting training for 1 epochs...
+2026-03-30 14:59:11 | INFO | docred | Epoch 1/1: BMM warm-up (CE-only mode)
+2026-03-30 15:04:17 | INFO | docred | Local DocRED file missing for train_path; downloading dataset (wyldream/docred)...
+2026-03-30 15:04:17 | INFO | docred | Resolved train_path -> /root/.cache/kagglehub/datasets/wyldream/docred/versions/2/train_annotated.json
+2026-03-30 15:04:17 | INFO | docred | Resolved dev_path -> /root/.cache/kagglehub/datasets/wyldream/docred/versions/2/dev.json
+2026-03-30 15:04:17 | INFO | docred | Resolved test_path -> /root/.cache/kagglehub/datasets/wyldream/docred/versions/2/test.json
+2026-03-30 15:04:17 | INFO | docred | Resolved rel_info_path -> /root/.cache/kagglehub/datasets/wyldream/docred/versions/2/rel_info.json
+2026-03-30 15:04:17 | INFO | docred | CUDA-only mode enabled (training.require_cuda=true).
+2026-03-30 15:04:17 | INFO | docred | Weights & Biases logging disabled by config (training.wandb=false).
+2026-03-30 15:04:17 | INFO | docred | Building datasets...
+2026-03-30 15:06:40 | INFO | docred | Train docs: 3053 | Dev docs: 1000
+2026-03-30 15:06:40 | INFO | docred | Initialising DocREDPipeline...
+2026-03-30 15:06:51 | INFO | docred | max_pairs_per_doc=256 (reduces GNN/triple cost on entity-heavy docs)
+2026-03-30 15:06:51 | INFO | docred | Initialising JointLoss...
+2026-03-30 15:07:10 | INFO | docred.train | Evidence miner co-occurrence statistics updated.
+2026-03-30 15:07:10 | INFO | docred.train | Optimizer: PLM params=199 (lr=2e-05), other params=167 (lr=0.001)
+2026-03-30 15:07:10 | INFO | docred.train | Scheduler: total_steps=24, warmup_steps=1
+2026-03-30 15:07:10 | INFO | docred | Mixed-precision training enabled (dtype=bfloat16).
+2026-03-30 15:07:10 | INFO | docred | GradScaler disabled (bf16 uses autocast only).
+2026-03-30 15:07:10 | INFO | docred | Starting training for 1 epochs...
+2026-03-30 15:07:10 | INFO | docred | Epoch 1/1: BMM warm-up (CE-only mode)
+2026-03-30 15:09:26 | INFO | docred | Local DocRED file missing for train_path; downloading dataset (wyldream/docred)...
+2026-03-30 15:09:26 | INFO | docred | Resolved train_path -> /root/.cache/kagglehub/datasets/wyldream/docred/versions/2/train_annotated.json
+2026-03-30 15:09:26 | INFO | docred | Resolved dev_path -> /root/.cache/kagglehub/datasets/wyldream/docred/versions/2/dev.json
+2026-03-30 15:09:26 | INFO | docred | Resolved test_path -> /root/.cache/kagglehub/datasets/wyldream/docred/versions/2/test.json
+2026-03-30 15:09:26 | INFO | docred | Resolved rel_info_path -> /root/.cache/kagglehub/datasets/wyldream/docred/versions/2/rel_info.json
+2026-03-30 15:09:27 | INFO | docred | CUDA-only mode enabled (training.require_cuda=true).
+2026-03-30 15:09:27 | INFO | docred | Weights & Biases logging disabled by config (training.wandb=false).
+2026-03-30 15:09:27 | INFO | docred | Building datasets...
+2026-03-30 15:09:31 | INFO | docred | Train docs: 3053 | Dev docs: 1000
+2026-03-30 15:09:31 | INFO | docred | Initialising DocREDPipeline...
+2026-03-30 15:09:35 | INFO | docred | max_pairs_per_doc=64 (reduces GNN/triple cost on entity-heavy docs)
+2026-03-30 15:09:35 | INFO | docred | Initialising JointLoss...
+2026-03-30 15:09:55 | INFO | docred.train | Evidence miner co-occurrence statistics updated.
+2026-03-30 15:09:55 | INFO | docred.train | Optimizer: PLM params=103 (lr=2e-05), other params=167 (lr=0.001)
+2026-03-30 15:09:55 | INFO | docred.train | Scheduler: total_steps=48, warmup_steps=2
+2026-03-30 15:09:55 | INFO | docred | Mixed-precision training enabled (dtype=bfloat16).
+2026-03-30 15:09:55 | INFO | docred | GradScaler disabled (bf16 uses autocast only).
+2026-03-30 15:09:55 | INFO | docred | Starting training for 1 epochs...
+2026-03-30 15:09:55 | INFO | docred | Epoch 1/1: BMM warm-up (CE-only mode)

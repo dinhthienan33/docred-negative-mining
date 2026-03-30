@@ -7,13 +7,16 @@
 # -----------------------------------------------------------------------------
 model:
   # Pre-trained language model backbone (HuggingFace model name or local path)
-  plm_name: "microsoft/deberta-v3-large"
+  plm_name: "microsoft/deberta-v3-small"
 
   # LoRA/QLoRA PEFT adapter
   use_lora: false
 
-  # Encoder output dimension (must match PLM hidden size for deberta-v3-large=1024)
-  hidden_dim: 1024
+  # Encoder output dimension — must match PLM hidden size:
+  #   deberta-v3-small  → 768
+  #   deberta-v3-base   → 768
+  #   deberta-v3-large  → 1024
+  hidden_dim: 768
 
   # Graph Neural Network
   gnn_hidden_dim: 256
@@ -35,7 +38,7 @@ model:
 
   # Cap directed entity pairs per document (GNN + triple head). -1 = no cap.
   # Large docs are O(E²); 256–512 cuts compute with small recall risk.
-  max_pairs_per_doc: 512
+  max_pairs_per_doc: 64
 
 # -----------------------------------------------------------------------------
 # Data
@@ -47,7 +50,7 @@ data:
   rel_info_path: "data/rel_info.json"
 
   # Maximum number of subword tokens per document (documents are truncated)
-  max_length: 1024
+  max_length: 512
 
   # Insert [unused0] / [unused1] markers around every entity mention
   use_entity_markers: true
@@ -58,11 +61,11 @@ data:
 training:
   wandb: false
   epochs: 1
-  batch_size: 4
+  batch_size: 8
   grad_accumulation_steps: 8  # effective batch = batch_size * this
 
   # Training-time bottleneck diagnostics.
-  profile_timing: false
+  profile_timing: true
   profile_batches: 100
 
   # Speed: one forward pass instead of two (~2× faster step). Contrastive views
@@ -84,6 +87,7 @@ training:
 
   fp16: true                   # mixed-precision training (AMP); use bf16 if available
   bf16: true                   # prefer bfloat16 on Ampere+ (often faster / more stable than fp16)
+  require_cuda: true           # fail fast if CUDA is unavailable (prevents CPU fallback)
   seed: 42
 
   # Early stopping: stop if dev Ign F1 does not improve for this many epochs
@@ -94,10 +98,10 @@ training:
 # -----------------------------------------------------------------------------
 loss:
   # Weight for the graph contrastive loss term
-  lambda_gcl: 0.5
+  lambda_gcl: 0
 
   # Weight for the evidence-aware contrastive loss term
-  lambda_evidence: 0.3
+  lambda_evidence: 0
 
   # InfoNCE temperature (lower = sharper distribution)
   contrastive_temperature: 0.07

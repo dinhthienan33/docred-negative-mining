@@ -475,7 +475,10 @@ def run_evaluation(
     log = create_logger(output_dir)
     data_cfg = ensure_docred_data_paths(config["data"], log)
     config["data"] = data_cfg
-    device = get_device()
+    require_cuda = bool(config["training"].get("require_cuda", True))
+    device = get_device(require_cuda=require_cuda)
+    if require_cuda:
+        log.info("CUDA-only mode enabled (training.require_cuda=true).")
 
     # ------------------------------------------------------------------
     # Relation info

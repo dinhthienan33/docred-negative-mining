@@ -499,7 +499,10 @@ def train(config: Dict[str, Any], resume_path: Optional[str] = None) -> None:
     data_cfg = ensure_docred_data_paths(config["data"], log)
     config["data"] = data_cfg
     set_seed(train_cfg["seed"])
-    device = get_device()
+    require_cuda = bool(train_cfg.get("require_cuda", True))
+    device = get_device(require_cuda=require_cuda)
+    if require_cuda:
+        log.info("CUDA-only mode enabled (training.require_cuda=true).")
 
     if device.type == "cuda":
         torch.backends.cudnn.benchmark = True

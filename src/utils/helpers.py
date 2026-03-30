@@ -46,8 +46,12 @@ def set_seed(seed: int) -> None:
 # Device
 # ---------------------------------------------------------------------------
 
-def get_device() -> torch.device:
+def get_device(require_cuda: bool = False) -> torch.device:
     """Auto-detect and return the best available compute device.
+
+    Args:
+        require_cuda: If ``True``, raise a :class:`RuntimeError` when CUDA is
+            unavailable instead of falling back to MPS/CPU.
 
     Returns:
         ``torch.device("cuda")`` when an NVIDIA GPU is available,
@@ -60,6 +64,11 @@ def get_device() -> torch.device:
             "Using CUDA device: %s (device count=%d)",
             torch.cuda.get_device_name(0),
             torch.cuda.device_count(),
+        )
+    elif require_cuda:
+        raise RuntimeError(
+            "CUDA is required but not available. "
+            "Ensure an NVIDIA GPU is visible to PyTorch and CUDA drivers are installed."
         )
     elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
         device = torch.device("mps")
