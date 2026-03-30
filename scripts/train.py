@@ -509,19 +509,22 @@ def train(config: Dict[str, Any], resume_path: Optional[str] = None) -> None:
     profile_timing = bool(train_cfg.get("profile_timing", False))
     profile_batches = max(1, int(train_cfg.get("profile_batches", 100)))
 
-    # Optional W&B
-    use_wandb = False
-    try:
-        import wandb
-        wandb.init(
-            project=log_cfg.get("wandb_project", "docred-gcl"),
-            entity=log_cfg.get("wandb_entity"),
-            config=config,
-        )
-        use_wandb = True
-        log.info("Weights & Biases logging enabled.")
-    except Exception:
-        log.info("wandb not available or init failed; logging to file only.")
+    # Optional W&B (guarded by training.wandb)
+    use_wandb = bool(train_cfg.get("wandb", False))
+    if use_wandb:
+        try:
+            import wandb
+            wandb.init(
+                project=log_cfg.get("wandb_project", "docred-gcl"),
+                entity=log_cfg.get("wandb_entity"),
+                config=config,
+            )
+            log.info("Weights & Biases logging enabled.")
+        except Exception:
+            use_wandb = False
+            log.info("wandb not available or init failed; logging to file only.")
+    else:
+        log.info("Weights & Biases logging disabled by config (training.wandb=false).")
 
     # ------------------------------------------------------------------
     # Data

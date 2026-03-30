@@ -56,6 +56,7 @@ data:
 # Training
 # -----------------------------------------------------------------------------
 training:
+  wandb: false
   epochs: 1
   batch_size: 4
   grad_accumulation_steps: 8  # effective batch = batch_size * this
