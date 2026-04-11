@@ -409,16 +409,19 @@ class EvidenceNegativeMiner:
 
         # Build per-batch-item relation ids for get_hard_negatives
         batch_relation_ids: List[int] = []
-        for i in all_indices:
-            if relation_labels is not None:
+        first_rid_tensor: Optional[Tensor] = batch_data.get("_first_rid")  # type: ignore[assignment]
+        for j in all_indices:
+            if first_rid_tensor is not None and j < first_rid_tensor.shape[0]:
+                batch_relation_ids.append(int(first_rid_tensor[j].item()))
+            elif relation_labels is not None:
                 if isinstance(relation_labels, Tensor):
-                    r_ids = relation_labels[i].nonzero(as_tuple=False).squeeze(-1).tolist()
+                    r_ids = relation_labels[j].nonzero(as_tuple=False).squeeze(-1).tolist()
                 else:
-                    r_ids = relation_labels[i] if i < len(relation_labels) else []
+                    r_ids = relation_labels[j] if j < len(relation_labels) else []
                 r_id = r_ids[0] if r_ids else 0
+                batch_relation_ids.append(r_id)
             else:
-                r_id = i % self.num_relations
-            batch_relation_ids.append(r_id)
+                batch_relation_ids.append(j % self.num_relations)
 
         # Get hardness tiers
         neg_info = self.get_hard_negatives(
@@ -469,6 +472,78 @@ class EvidenceNegativeMiner:
             "weights": torch.tensor(weights,         dtype=torch.float32),
             "tiers":   sampled_tiers,
         }
+
+    def sample_negatives_batch(
+        self,
+        batch_data: Dict[str, object],
+        num_hard: int,
+        num_medium: int,
+        num_easy: int,
+    ) -> Dict[str, Tensor]:
+        """
+        Sample negatives for every anchor in one pass (fixed padding + valid mask).
+
+        Returns
+        -------
+        dict
+            ``indices`` [B, K_max], ``weights`` [B, K_max], ``valid_mask`` [B, K_max].
+        """
+        entity_pair_ids = batch_data.get("entity_pair_ids", [])
+        B = len(entity_pair_ids)
+        if B == 0:
+            return {
+                "indices": torch.zeros(0, 0, dtype=torch.long),
+                "weights": torch.zeros(0, 0, dtype=torch.float32),
+                "valid_mask": torch.zeros(0, 0, dtype=torch.bool),
+            }
+
+        bd = dict(batch_data)
+        relation_labels = bd.get("relation_labels")
+        if isinstance(relation_labels, Tensor):
+            RL = relation_labels
+            dev_r = RL.device
+            R = int(RL.size(1))
+            pos = RL > 0.5
+            has = pos.any(dim=1)
+            rid_grid = torch.arange(R, device=dev_r, dtype=torch.long).unsqueeze(0).expand(
+                B, -1
+            )
+            big = torch.full((B, R), R, device=dev_r, dtype=torch.long)
+            masked_first = torch.where(pos, rid_grid, big)
+            fr = masked_first.min(dim=1).values
+            fr = torch.where(has, fr, torch.zeros(B, dtype=torch.long, device=dev_r))
+            bd["_first_rid"] = fr
+
+        idx_rows: List[Tensor] = []
+        w_rows: List[Tensor] = []
+        for i in range(B):
+            one = self.sample_negatives(
+                i, bd, num_hard, num_medium, num_easy
+            )
+            idx_rows.append(one["indices"])
+            w_rows.append(one["weights"])
+
+        device = idx_rows[0].device
+        max_k = max(t.numel() for t in idx_rows)
+        if max_k == 0:
+            return {
+                "indices": torch.zeros(B, 0, dtype=torch.long, device=device),
+                "weights": torch.zeros(B, 0, dtype=torch.float32, device=device),
+                "valid_mask": torch.zeros(B, 0, dtype=torch.bool, device=device),
+            }
+
+        out_i = torch.full((B, max_k), -1, dtype=torch.long, device=device)
+        out_w = torch.zeros(B, max_k, dtype=torch.float32, device=device)
+        valid = torch.zeros(B, max_k, dtype=torch.bool, device=device)
+        for row, (ix, wt) in enumerate(zip(idx_rows, w_rows)):
+            k = ix.numel()
+            if k == 0:
+                continue
+            out_i[row, :k] = ix.to(device=device, dtype=torch.long)
+            out_w[row, :k] = wt.to(device=device, dtype=torch.float32)
+            valid[row, :k] = True
+
+        return {"indices": out_i, "weights": out_w, "valid_mask": valid}
 
 
 # ------------------------------------------------------------------

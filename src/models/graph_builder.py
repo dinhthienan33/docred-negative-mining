@@ -1,5 +1,5 @@
 """
-graph_builder.py – Heterogeneous Document Graph Constructor
+graph_builder.py - Heterogeneous Document Graph Constructor
 ============================================================
 Builds a PyTorch Geometric ``HeteroData`` object from a single document's
 encoder outputs and linguistic annotations.
@@ -27,6 +27,7 @@ bidirectional by adding reverse edges.
 from __future__ import annotations
 
 import logging
+import random
 from typing import Dict, List, Optional, Tuple
 
 import torch
@@ -53,15 +54,26 @@ class DocGraphBuilder:
         Disable to reduce graph size during ablation studies.
     add_self_loops : bool
         Whether to add self-loops to every node type.
+    max_coref_mention_pairs_per_entity : int
+        Cap undirected mention–mention pairs per entity when building coref
+        cliques.  ``0`` means no cap (full clique).
+    max_same_sent_mention_pairs_per_sentence : int
+        Cap undirected pairs per sentence for ``same_sent`` edges.  ``0`` = no cap.
     """
 
     def __init__(
         self,
         add_sentence_nodes: bool = True,
         add_self_loops: bool = True,
+        max_coref_mention_pairs_per_entity: int = 0,
+        max_same_sent_mention_pairs_per_sentence: int = 0,
     ) -> None:
         self.add_sentence_nodes = add_sentence_nodes
         self.add_self_loops = add_self_loops
+        self.max_coref_mention_pairs_per_entity = max_coref_mention_pairs_per_entity
+        self.max_same_sent_mention_pairs_per_sentence = (
+            max_same_sent_mention_pairs_per_sentence
+        )
 
     # ------------------------------------------------------------------
     # Public API
@@ -164,10 +176,12 @@ class DocGraphBuilder:
 
             if coref_chains is not None:
                 for chain in coref_chains:
-                    for i, mi in enumerate(chain):
-                        for mj in chain[i + 1:]:
-                            coref_src.extend([mi, mj])
-                            coref_dst.extend([mj, mi])
+                    cs, cd = self._limited_clique_edges(
+                        chain,
+                        self.max_coref_mention_pairs_per_entity,
+                    )
+                    coref_src.extend(cs)
+                    coref_dst.extend(cd)
             else:
                 # Use mention_to_entity to infer coreferent pairs
                 from collections import defaultdict
@@ -175,10 +189,12 @@ class DocGraphBuilder:
                 for m_idx, e_idx in enumerate(mention_to_entity):
                     entity_to_mentions[e_idx].append(m_idx)
                 for e_idx, m_list in entity_to_mentions.items():
-                    for i, mi in enumerate(m_list):
-                        for mj in m_list[i + 1:]:
-                            coref_src.extend([mi, mj])
-                            coref_dst.extend([mj, mi])
+                    cs, cd = self._limited_clique_edges(
+                        m_list,
+                        self.max_coref_mention_pairs_per_entity,
+                    )
+                    coref_src.extend(cs)
+                    coref_dst.extend(cd)
 
             if coref_src:
                 data["mention", "coref", "mention"].edge_index = torch.tensor(
@@ -237,10 +253,12 @@ class DocGraphBuilder:
             ss_src: List[int] = []
             ss_dst: List[int] = []
             for s_idx, m_list in sent_to_mentions.items():
-                for i, mi in enumerate(m_list):
-                    for mj in m_list[i + 1:]:
-                        ss_src.extend([mi, mj])
-                        ss_dst.extend([mj, mi])
+                cs, cd = self._limited_clique_edges(
+                    m_list,
+                    self.max_same_sent_mention_pairs_per_sentence,
+                )
+                ss_src.extend(cs)
+                ss_dst.extend(cd)
 
             if ss_src:
                 data["mention", "same_sent", "mention"].edge_index = torch.tensor(
@@ -265,6 +283,30 @@ class DocGraphBuilder:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _limited_clique_edges(
+        mention_indices: List[int],
+        max_undirected_pairs: int,
+    ) -> Tuple[List[int], List[int]]:
+        """
+        Build bidirectional edges for an undirected clique over ``mention_indices``,
+        optionally subsampling undirected pairs when the clique is large.
+        """
+        m_list = list(mention_indices)
+        pairs: List[Tuple[int, int]] = [
+            (m_list[i], m_list[j])
+            for i in range(len(m_list))
+            for j in range(i + 1, len(m_list))
+        ]
+        if max_undirected_pairs > 0 and len(pairs) > max_undirected_pairs:
+            pairs = random.sample(pairs, max_undirected_pairs)
+        src: List[int] = []
+        dst: List[int] = []
+        for mi, mj in pairs:
+            src.extend([mi, mj])
+            dst.extend([mj, mi])
+        return src, dst
 
     @staticmethod
     def _get_sentence_idx(

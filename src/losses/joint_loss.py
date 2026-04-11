@@ -204,6 +204,7 @@ class BMM_InfoNCE(nn.Module):
         positive_embs: Tensor,
         negative_embs: Tensor,
         negative_weights: Tensor,
+        neg_valid_mask: Optional[Tensor] = None,
     ) -> Tensor:
         """
         Compute BMM-reweighted InfoNCE loss.
@@ -220,6 +221,9 @@ class BMM_InfoNCE(nn.Module):
             BMM-derived weights, shape [N, K].
             Higher weight ⟹ more likely a true negative ⟹ kept at full strength.
             Lower weight ⟹ suspected false negative ⟹ down-weighted.
+        neg_valid_mask : Tensor, optional
+            Boolean mask [N, K].  If provided, invalid positions are excluded from
+            the denominator (for padded evidence-CL negatives).
 
         Returns
         -------
@@ -248,8 +252,10 @@ class BMM_InfoNCE(nn.Module):
         sim_an = (a.unsqueeze(1) * n).sum(dim=-1) / tau  # [N, K]
 
         # ---- Apply BMM weights ----
-        # Clamp weights to (0, 1] for numerical safety
-        w = negative_weights.to(device=device, dtype=a.dtype).clamp(min=_EPS)  # [N, K]
+        w = negative_weights.to(device=device, dtype=a.dtype)  # [N, K]
+        if neg_valid_mask is not None:
+            w = w.masked_fill(~neg_valid_mask, 1.0)
+        w = w.clamp(min=_EPS)
 
         # ---- Numerically stable log-sum-exp ----
         # numerator   = exp(sim_ap)
@@ -262,6 +268,10 @@ class BMM_InfoNCE(nn.Module):
         log_w = torch.log(w)  # [N, K]
         # Weighted negative terms in log-space: sim_an + log(w) → [N, K]
         neg_log_terms = sim_an + log_w  # [N, K]
+        if neg_valid_mask is not None:
+            neg_log_terms = neg_log_terms.masked_fill(
+                ~neg_valid_mask, float("-inf")
+            )
 
         # Concatenate positive and weighted negative log-terms: [N, K+1]
         all_log_terms = torch.cat(
@@ -306,6 +316,11 @@ class JointLoss(nn.Module):
         Hard-negative evidence overlap threshold.
     topk_hard : int
         Number of top hard negatives from EvidenceMiner.
+    contrastive_top_k : int, optional
+        If set, each anchor uses only this many in-batch negatives: those with
+        highest cosine similarity to the anchor (hardest negatives).  The
+        InfoNCE/BMM forward is O(B·K) in negatives instead of O(B²).  ``None``
+        uses all B-1 other batch members (same negative set as before).
     """
 
     def __init__(
@@ -318,12 +333,14 @@ class JointLoss(nn.Module):
         bmm_update_every: int = 100,
         evidence_overlap_threshold: float = 0.3,
         topk_hard: int = 10,
+        contrastive_top_k: Optional[int] = None,
     ) -> None:
         super().__init__()
         self.num_relations   = num_relations
         self.lambda_gcl      = lambda_gcl
         self.lambda_evidence = lambda_evidence
         self.temperature     = temperature
+        self.contrastive_top_k = contrastive_top_k
 
         # Sub-modules
         self.atlop_loss = ATLOPLoss(num_relations=num_relations)
@@ -427,8 +444,7 @@ class JointLoss(nn.Module):
             step=step,
         )  # [B, B]
 
-        # Remove self-weights (diagonal) by masking
-        # We build [B, B-1] negatives by excluding each anchor's own row
+        # GCL: [B, K] hardest in-batch negatives (or all B-1 if contrastive_top_k is null)
         L_gcl: Tensor = self._compute_gcl_loss(
             anchor_embs=anchor_embs,
             positive_embs=positive_embs,
@@ -476,7 +492,11 @@ class JointLoss(nn.Module):
         """
         Standard in-batch negative InfoNCE with BMM reweighting.
 
-        For each anchor i, all other batch members j ≠ i are negatives.
+        For each anchor i, negatives are other batch members j ≠ i.  When
+        ``contrastive_top_k`` is set, only the K negatives with highest cosine
+        similarity to i are kept (hard negatives); otherwise all B-1 are used.
+        The multiset is the same when K = B-1, so the loss matches the former
+        all-negative formulation up to tie-breaking in ``topk``.
 
         Parameters
         ----------
@@ -491,25 +511,26 @@ class JointLoss(nn.Module):
         Tensor
             Scalar loss.
         """
-        B, dim = anchor_embs.shape
+        B, _dim = anchor_embs.shape
         device = anchor_embs.device
 
-        # Build [B, B-1, dim] negatives by excluding self
-        neg_embs_list: List[Tensor] = []
-        neg_w_list:    List[Tensor] = []
+        # Pairwise cosine similarities (same space as BMM); mask self so top-k
+        # never selects the anchor row.
+        a = F.normalize(anchor_embs.detach().float(), p=2, dim=-1)
+        sim = torch.mm(a, a.t())
+        sim = sim.masked_fill(
+            torch.eye(B, dtype=torch.bool, device=device), float("-inf")
+        )
 
-        for i in range(B):
-            # Indices of negatives (all except i)
-            neg_idx = torch.cat([
-                torch.arange(0, i,   device=device),
-                torch.arange(i + 1, B, device=device),
-            ])  # [B-1]
-            neg_embs_list.append(all_embs[neg_idx])    # [B-1, dim]
-            neg_w_list.append(bmm_weights[i, neg_idx]) # [B-1]
-
-        # Stack: [B, B-1, dim] and [B, B-1]
-        neg_embs = torch.stack(neg_embs_list, dim=0)   # [B, B-1, dim]
-        neg_w    = torch.stack(neg_w_list,    dim=0)   # [B, B-1]
+        k_all = B - 1
+        k = (
+            k_all
+            if self.contrastive_top_k is None
+            else min(int(self.contrastive_top_k), k_all)
+        )
+        _, idx = torch.topk(sim, k=k, dim=-1, largest=True, sorted=False)
+        neg_embs = all_embs[idx.long()]  # [B, k, dim]
+        neg_w = bmm_weights.gather(1, idx.long())  # [B, k]
 
         return self.bmm_infonce(anchor_embs, positive_embs, neg_embs, neg_w)
 
@@ -570,58 +591,54 @@ class JointLoss(nn.Module):
             "relation_labels": relation_labels,
         }
 
-        # Collect evidence-aware negatives for each anchor
+        # Collect evidence-aware negatives for each anchor (batched padding + mask)
         num_hard_per_anchor = min(5, B - 1)
         total_neg_per_anchor = min(B - 1, 15)
-        num_med  = min(5, total_neg_per_anchor - num_hard_per_anchor)
+        num_med = min(5, total_neg_per_anchor - num_hard_per_anchor)
         num_easy = max(0, total_neg_per_anchor - num_hard_per_anchor - num_med)
 
-        neg_embs_list: List[Tensor] = []
-        neg_w_list:    List[Tensor] = []
-
-        for i in range(B):
-            sample_result = self.evidence_miner.sample_negatives(
-                anchor_idx=i,
-                batch_data=batch_data,
-                num_hard=num_hard_per_anchor,
-                num_medium=num_med,
-                num_easy=num_easy,
-            )
-            indices: Tensor = sample_result["indices"].to(device)  # [K']
-            weights: Tensor = sample_result["weights"].to(device)  # [K']
-
-            if indices.numel() == 0:
-                # Fallback: all other batch members as equal-weighted negatives
-                fallback_idx = torch.cat([
-                    torch.arange(0, i,     device=device),
-                    torch.arange(i + 1, B, device=device),
-                ])
-                indices = fallback_idx
-                weights = torch.ones(indices.numel(), device=device)
-
-            neg_embs_list.append(anchor_embs[indices])  # [K', dim]
-            neg_w_list.append(weights)                  # [K']
-
-        # Pad to uniform K for batching
-        max_k = max(e.shape[0] for e in neg_embs_list)
-        if max_k == 0:
+        mined = self.evidence_miner.sample_negatives_batch(
+            batch_data,
+            num_hard=num_hard_per_anchor,
+            num_medium=num_med,
+            num_easy=num_easy,
+        )
+        idx = mined["indices"].to(device)
+        padded_neg_w = mined["weights"].to(device)
+        vm = mined["valid_mask"].to(device)
+        if idx.numel() == 0 or idx.size(1) == 0:
             return torch.tensor(0.0, device=device, requires_grad=False)
 
-        padded_neg_embs = torch.zeros(B, max_k, anchor_embs.shape[-1], device=device)
-        padded_neg_w    = torch.zeros(B, max_k, device=device)
+        # Rows with no valid negatives: fall back to other in-batch indices (truncated to width)
+        max_width = idx.size(1)
         for i in range(B):
-            k_i = neg_embs_list[i].shape[0]
-            padded_neg_embs[i, :k_i] = neg_embs_list[i]
-            padded_neg_w[i,    :k_i] = neg_w_list[i]
-            # Padding weight=0 means those positions contribute ~nothing to loss
-            # (log(0+eps) ≈ -inf, so they effectively vanish in logsumexp)
+            if not vm[i].any():
+                fallback_idx = torch.cat(
+                    [
+                        torch.arange(0, i, device=device),
+                        torch.arange(i + 1, B, device=device),
+                    ]
+                )
+                kf = fallback_idx.numel()
+                if kf == 0:
+                    continue
+                if kf > max_width:
+                    fallback_idx = fallback_idx[:max_width]
+                    kf = max_width
+                idx[i, :kf] = fallback_idx
+                padded_neg_w[i, :kf] = 1.0
+                vm[i, :kf] = True
 
-        # Clamp to avoid log(0)
-        padded_neg_w = padded_neg_w.clamp(min=1e-8)
+        safe_idx = torch.where(vm, idx, torch.zeros_like(idx))
+        padded_neg_embs = anchor_embs[safe_idx]
+        padded_neg_embs = padded_neg_embs * vm.unsqueeze(-1).to(
+            dtype=padded_neg_embs.dtype
+        )
 
         return self.bmm_infonce(
             anchor_embs,
             positive_embs,
             padded_neg_embs,
             padded_neg_w,
+            neg_valid_mask=vm,
         )

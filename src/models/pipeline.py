@@ -36,6 +36,8 @@ All keys with defaults::
     contrastive_dim    : int   = 256
     head_dropout       : float = 0.1
     max_pairs_per_doc  : int   = -1   # -1 = no limit
+    max_coref_mention_pairs_per_entity : int = 0   # 0 = unlimited clique
+    max_same_sent_mention_pairs_per_sentence : int = 0
 """
 
 from __future__ import annotations
@@ -119,7 +121,15 @@ class DocREDPipeline(nn.Module):
         # 2. Document Graph Builder (stateless, not nn.Module)
         # ----------------------------------------------------------------
         add_sent: bool = _get_cfg(config, "add_sentence_nodes", True)
-        self.graph_builder = DocGraphBuilder(add_sentence_nodes=add_sent)
+        max_coref: int = _get_cfg(config, "max_coref_mention_pairs_per_entity", 0)
+        max_same_sent: int = _get_cfg(
+            config, "max_same_sent_mention_pairs_per_sentence", 0
+        )
+        self.graph_builder = DocGraphBuilder(
+            add_sentence_nodes=add_sent,
+            max_coref_mention_pairs_per_entity=max_coref,
+            max_same_sent_mention_pairs_per_sentence=max_same_sent,
+        )
 
         # ----------------------------------------------------------------
         # 3. GNN Reasoner
@@ -448,8 +458,11 @@ class DocREDPipeline(nn.Module):
         """``labels_3d`` [E, E, R] → rows [num_pairs, R] for the given pairs."""
         if not pair_list:
             return labels_3d.new_zeros(0, labels_3d.size(-1))
-        rows = [labels_3d[h, t] for h, t in pair_list]
-        return torch.stack(rows, dim=0)
+        h_idx = torch.tensor([p[0] for p in pair_list], dtype=torch.long,
+                             device=labels_3d.device)
+        t_idx = torch.tensor([p[1] for p in pair_list], dtype=torch.long,
+                             device=labels_3d.device)
+        return labels_3d[h_idx, t_idx]
 
     def _compute_pairs(
         self,
@@ -536,8 +549,6 @@ class DocREDPipeline(nn.Module):
             return None
 
         num_pairs = len(pair_list)
-        context = sent_embs_gnn.new_zeros(num_pairs, sent_embs_gnn.size(-1))
-        global_sent_mean = sent_embs_gnn.mean(0)
 
         # Project sentence embeddings to gnn_out if they differ in dim
         if sent_embs_gnn.size(-1) != self.gnn_out:
@@ -548,18 +559,39 @@ class DocREDPipeline(nn.Module):
                 ).to(device)
             sent_embs_gnn = self._sent_proj_lazy(sent_embs_gnn)
 
+        global_sent_mean = sent_embs_gnn.mean(dim=0)
+        context = global_sent_mean.unsqueeze(0).expand(num_pairs, -1).clone()
+
+        num_sents = sent_embs_gnn.size(0)
+        flat_s: List[int] = []
+        pair_row: List[int] = []
         for i, (h, t) in enumerate(pair_list):
-            if evidence_map is not None and (h, t) in evidence_map:
-                ev_sents = evidence_map[(h, t)]
-                valid_ev = [
-                    s for s in ev_sents if 0 <= s < sent_embs_gnn.size(0)
-                ]
-                if valid_ev:
-                    ev_idx = torch.tensor(valid_ev, dtype=torch.long, device=device)
-                    context[i] = sent_embs_gnn[ev_idx].mean(0)
-                    continue
-            # Fallback: use average of all sentence embeddings as context
-            context[i] = global_sent_mean
+            if evidence_map is None or (h, t) not in evidence_map:
+                continue
+            for s in evidence_map[(h, t)]:
+                if 0 <= s < num_sents:
+                    flat_s.append(s)
+                    pair_row.append(i)
+
+        if not flat_s:
+            return context
+
+        flat_s_t = torch.tensor(flat_s, dtype=torch.long, device=device)
+        pair_row_t = torch.tensor(pair_row, dtype=torch.long, device=device)
+        vals = sent_embs_gnn[flat_s_t]
+        dim = vals.size(-1)
+        out_sum = vals.new_zeros(num_pairs, dim)
+        out_cnt = vals.new_zeros(num_pairs, 1)
+        idx_exp = pair_row_t.unsqueeze(1).expand(-1, dim)
+        out_sum.scatter_add_(0, idx_exp, vals)
+        out_cnt.scatter_add_(
+            0,
+            pair_row_t.unsqueeze(1),
+            vals.new_ones(pair_row_t.shape[0], 1),
+        )
+        has_ev = (out_cnt.squeeze(-1) > 0)
+        if has_ev.any():
+            context[has_ev] = out_sum[has_ev] / out_cnt[has_ev].squeeze(-1).unsqueeze(-1)
 
         return context
 

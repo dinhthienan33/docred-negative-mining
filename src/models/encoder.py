@@ -171,7 +171,9 @@ class DocumentEncoder(nn.Module):
         # ---- PLM forward ------------------------------------------------
         outputs = self.plm(input_ids=input_ids, attention_mask=attention_mask)
         # Shape: [batch, seq_len, hidden_dim]
-        token_embs: torch.Tensor = outputs.last_hidden_state
+        token_embs: torch.Tensor = outputs.last_hidden_state.to(
+            dtype=self.span_attn.weight.dtype
+        )
 
         # ---- Per-document mention / entity pooling ----------------------
         all_mention_embs: List[torch.Tensor] = []

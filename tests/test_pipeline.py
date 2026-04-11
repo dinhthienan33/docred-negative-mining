@@ -594,6 +594,25 @@ class TestJointLoss:
             "Warm-up loss should be non-negative"
         )
 
+    def test_joint_loss_contrastive_top_k(self) -> None:
+        """Top-K in-batch negatives should yield a finite GCL term."""
+        try:
+            from src.losses.joint_loss import JointLoss
+        except ImportError:
+            pytest.skip("joint_loss module not yet implemented")
+
+        loss_fn = JointLoss(
+            num_relations=NUM_RELATIONS,
+            lambda_gcl=1.0,
+            lambda_evidence=0.0,
+            bmm_warmup_epochs=9999,
+            contrastive_top_k=5,
+        )
+        outputs = self._make_model_outputs(num_pairs=32, include_contrastive=True)
+        result = loss_fn(model_outputs=outputs, epoch=0, step=0)
+        assert torch.isfinite(result["gcl"]).all()
+        assert result["total"].item() >= 0.0
+
 
 # ---------------------------------------------------------------------------
 # Test: Encoder output shapes (mock small model)

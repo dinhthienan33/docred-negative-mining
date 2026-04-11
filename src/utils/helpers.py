@@ -25,21 +25,26 @@ logger = logging.getLogger(__name__)
 # Reproducibility
 # ---------------------------------------------------------------------------
 
-def set_seed(seed: int) -> None:
+def set_seed(seed: int, deterministic: bool = False) -> None:
     """Set random seeds for Python, NumPy, and PyTorch (CPU + CUDA).
 
     Args:
         seed: Integer seed value.
+        deterministic: If ``True``, force deterministic CUDA algorithms
+            (significantly slower).  Default ``False`` for training speed.
     """
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
-    # Deterministic CUDA ops (may slow down training)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
     os.environ["PYTHONHASHSEED"] = str(seed)
-    logger.info("Global seed set to %d", seed)
+    if deterministic:
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+    else:
+        torch.backends.cudnn.deterministic = False
+        torch.backends.cudnn.benchmark = True
+    logger.info("Global seed set to %d (deterministic=%s)", seed, deterministic)
 
 
 # ---------------------------------------------------------------------------
